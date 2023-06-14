@@ -1,3 +1,5 @@
 /resume/
 /output_dir/**/*.pth
 /__pycache__/
+/output_dir_l2/
+**/events.out.tfevents*
