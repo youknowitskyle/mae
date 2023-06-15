@@ -1,0 +1,1 @@
+python main_pretrain.py --resume /home/kyle/school/farapy/mae/output_dir/checkpoint-560.pth --start_epoch 561 --model mae_vit_base_patch16 --data_path /home/kyle/school/farapy/VGG-Face2/data/processed/ --batch_size 32 --accum_iter 8 --epochs 800 --warmup_epochs 40 --norm_pix_loss --mask_ratio 0.75 --blr 1.5e-4
