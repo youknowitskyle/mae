@@ -15,6 +15,7 @@ import json
 import numpy as np
 import os
 import time
+import sys
 from pathlib import Path
 
 import torch
@@ -23,20 +24,22 @@ from torch.utils.tensorboard import SummaryWriter
 
 import timm
 
-assert timm.__version__ == "0.3.2" # version check
+# assert timm.__version__ == "0.3.2" # version check
 from timm.models.layers import trunc_normal_
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset
+from util.datasets import build_dataset, build_transform
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
 import models_vit
 
 from engine_finetune import train_one_epoch, evaluate
+
+from dataset import *
 
 
 def get_args_parser():
@@ -144,6 +147,9 @@ def get_args_parser():
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
 
+    parser.add_argument('-f', '--fold', default=1, type=int,
+                    metavar='N', help='the fold of three folds cross-validation ')
+
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
@@ -170,10 +176,13 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset(is_train=True, args=args)
-    dataset_val = build_dataset(is_train=False, args=args)
+    # dataset_train = build_dataset(is_train=True, args=args)
+    # dataset_val = build_dataset(is_train=False, args=args)
 
-    if True:  # args.distributed:
+    dataset_train = DISFA(args.data_path, train=True, fold=args.fold, transform=build_transform(is_train=True, args=args))
+    dataset_val = DISFA(args.data_path, train=False, fold=args.fold, transform=build_transform(is_train=False, args=args))
+
+    if False:  # args.distributed:
         num_tasks = misc.get_world_size()
         global_rank = misc.get_rank()
         sampler_train = torch.utils.data.DistributedSampler(
@@ -193,7 +202,7 @@ def main(args):
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
-    if global_rank == 0 and args.log_dir is not None and not args.eval:
+    if args.log_dir is not None and not args.eval:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = SummaryWriter(log_dir=args.log_dir)
     else:
@@ -275,9 +284,9 @@ def main(args):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % eff_batch_size)
 
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
+    # if args.distributed:
+    #     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    #     model_without_ddp = model.module
 
     # build optimizer with layer-wise lr decay (lrd)
     param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
@@ -293,7 +302,7 @@ def main(args):
     elif args.smoothing > 0.:
         criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.MSELoss()
 
     print("criterion = %s" % str(criterion))
 
@@ -301,15 +310,16 @@ def main(args):
 
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        print(f"Loss of the network on the {len(dataset_val)} test images: {test_stats['loss']:.1f}%")
         exit(0)
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
+    min_loss = np.inf
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
+        # if args.distributed:
+        #     data_loader_train.sampler.set_epoch(epoch)
         train_stats = train_one_epoch(
             model, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
@@ -323,14 +333,14 @@ def main(args):
                 loss_scaler=loss_scaler, epoch=epoch)
 
         test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        max_accuracy = max(max_accuracy, test_stats["acc1"])
-        print(f'Max accuracy: {max_accuracy:.2f}%')
+        print(f"Loss of the network on the {len(dataset_val)} test images: {test_stats['loss']:.1f}")
+        min_loss = min(min_loss, test_stats["loss"])
+        print(f'Min loss: {min_loss:.2f}%')
 
         if log_writer is not None:
-            log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-            log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+            log_writer.add_scalar('perf/test_mae', test_stats['mae'], epoch)
+            log_writer.add_scalar('perf/test_mse', test_stats['mse'], epoch)
+            log_writer.add_scalar('perf/test_icc', test_stats['icc'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         **{f'test_{k}': v for k, v in test_stats.items()},

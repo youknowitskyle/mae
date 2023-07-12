@@ -21,6 +21,9 @@ from timm.utils import accuracy
 import util.misc as misc
 import util.lr_sched as lr_sched
 
+import pingouin as pg
+import pandas as pd
+import numpy as np
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -48,6 +51,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
+
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
@@ -97,7 +101,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 @torch.no_grad()
 def evaluate(data_loader, model, device):
-    criterion = torch.nn.CrossEntropyLoss()
+    l2 = torch.nn.MSELoss()
+    l1 = torch.nn.L1Loss()
 
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = 'Test:'
@@ -114,17 +119,37 @@ def evaluate(data_loader, model, device):
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
-            loss = criterion(output, target)
+            loss = l2(output, target)
 
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        batch_size = target.shape[0]
+        num_aus = target.shape[1]
+
+
+        indexes = [f'{i}_{j}' for i in range(batch_size) for j in range(num_aus)]
+        indexes += indexes
+        raters = ['t' for _ in range(batch_size * num_aus)] + ['o' for _ in range(batch_size * num_aus)]
+        values = np.concatenate((batch[-1].flatten(), output.cpu().flatten()))
+
+        df = pd.DataFrame({'index': indexes, 'rater': raters, 'value': values})
+        icc = pg.intraclass_corr(data=df, targets='index', raters='rater', ratings='value').round(3)
+        icc = icc.set_index("Type").loc[['ICC3']]['ICC'].values[0]
+
+        # acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        mae = l1(output, target)
+        mse = loss
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
-        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
-        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+        metric_logger.meters['mae'].update(mae.item(), n=batch_size)
+        metric_logger.meters['mse'].update(mse.item(), n=batch_size)
+        metric_logger.meters['icc'].update(icc, n=batch_size)
+        # metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
+        # metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
-          .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
+    # print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
+    #       .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
+    print('* Loss {losses.global_avg:.3f} MAE {mae.global_avg:.3f} MSE {mse.global_avg:.3f} ICC {icc.global_avg:.3f}'
+          .format(losses=metric_logger.loss, mae=metric_logger.mae, mse=metric_logger.mse, icc=metric_logger.icc))
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
