@@ -122,8 +122,11 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
+    parser.add_argument('--dataset', default='DISFA', type=str,
+                        help='finetuning dataset')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
+    parser.add_argument('--unilateral', default=0, type=int, help='only use unilateral AUs for FEAFA+')
 
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -179,8 +182,12 @@ def main(args):
     # dataset_train = build_dataset(is_train=True, args=args)
     # dataset_val = build_dataset(is_train=False, args=args)
 
-    dataset_train = DISFA(args.data_path, train=True, fold=args.fold, transform=build_transform(is_train=True, args=args))
-    dataset_val = DISFA(args.data_path, train=False, fold=args.fold, transform=build_transform(is_train=False, args=args))
+    if args.dataset == 'DISFA':
+        dataset_train = DISFA(args.data_path, train=True, fold=args.fold, transform=build_transform(is_train=True, args=args))
+        dataset_val = DISFA(args.data_path, train=False, fold=args.fold, transform=build_transform(is_train=False, args=args))
+    else:
+        dataset_train = DATA(args.data_path, train=True, fold=args.fold, unilateral=args.unilateral, transform=build_transform(is_train=True, args=args))
+        dataset_val = DATA(args.data_path, train=False, fold=args.fold, unilateral=args.unilateral, transform=build_transform(is_train=False, args=args))
 
     if False:  # args.distributed:
         num_tasks = misc.get_world_size()

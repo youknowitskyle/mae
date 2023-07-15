@@ -25,7 +25,7 @@ def default_loader(path):
 
 
 class DATA(Dataset):
-    def __init__(self, root_path, train=True, fold = 1, transform=None, crop_size = 224, stage=1, loader=default_loader):
+    def __init__(self, root_path, train=True, fold = 1, transform=None, crop_size = 224, stage=1, unilateral=False, loader=default_loader):
 
         assert fold>0 and fold <=3, 'The fold num must be restricted from 1 to 3'
         assert stage>0 and stage <=2, 'The stage num must be restricted from 1 to 2'
@@ -43,6 +43,9 @@ class DATA(Dataset):
             # img labels
             train_label_list_path = os.path.join(root_path, 'train_label_fold' + str(fold) + '.txt')
             train_label_list = np.loadtxt(train_label_list_path).astype('float32')
+            # only use unilateral labels for FEAFA
+            if unilateral:
+                train_label_list = np.concatenate((train_label_list[:, :8], train_label_list[:, 9:15]), axis=1)
             self.data_list = make_dataset(train_image_list, train_label_list)
 
         else:
@@ -53,6 +56,9 @@ class DATA(Dataset):
             # img labels
             test_label_list_path = os.path.join(root_path, 'test_label_fold' + str(fold) + '.txt')
             test_label_list = np.loadtxt(test_label_list_path).astype('float32')
+            # only use uilateral labels for FEAFA
+            if unilateral:
+                test_label_list = np.concatenate((test_label_list[:, :8], test_label_list[:, 9:15]), axis=1)
             self.data_list = make_dataset(test_image_list, test_label_list)
 
     def __getitem__(self, index):
