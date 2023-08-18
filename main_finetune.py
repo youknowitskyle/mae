@@ -82,7 +82,7 @@ def get_args_parser():
     # Augmentation parameters
     parser.add_argument('--color_jitter', type=float, default=None, metavar='PCT',
                         help='Color jitter factor (enabled only when not using Auto/RandAug)')
-    parser.add_argument('--aa', type=str, default='rand-m9-mstd0.5-inc1', metavar='NAME',
+    parser.add_argument('--aa', type=str, default='rand-m1-mstd0.15-inc0', metavar='NAME',
                         help='Use AutoAugment policy. "v0" or "original". " + "(default: rand-m9-mstd0.5-inc1)'),
     parser.add_argument('--smoothing', type=float, default=0.1,
                         help='Label smoothing (default: 0.1)')
@@ -206,8 +206,10 @@ def main(args):
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     else:
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        # sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        sampler_train = torch.utils.data.WeightedRandomSampler(misc.get_sampler_weights(dataset_train.data_list), len(dataset_train))
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        # sampler_val = torch.utils.data.RandomSampler(dataset_val)
 
     if args.log_dir is not None and not args.eval:
         os.makedirs(args.log_dir, exist_ok=True)
@@ -244,6 +246,10 @@ def main(args):
         num_classes=args.nb_classes,
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
+        # drop_rate=0.1,
+        # proj_drop_rate=0.1,
+        # pos_drop_rate=0.1,
+        # attn_drop_rate=0.1,
     )
 
     if args.finetune and not args.eval:
@@ -264,13 +270,25 @@ def main(args):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
-        if args.global_pool:
-            assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
-        else:
-            assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
+        # if args.global_pool:
+        #     assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
+        # else:
+        #     assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
 
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
+        # trunc_normal_(model.head.weight, std=0.01)
+
+        # model.head = torch.nn.Sequential(torch.nn.BatchNorm1d(model.head.in_features, affine=False, eps=1e-6), model.head)
+        # # freeze all but the head
+        # for _, p in model.named_parameters():
+        #     p.requires_grad = False
+        # for _, p in model.blocks[-1].named_parameters():
+        #     p.requires_grad = True
+        # for _, p in model.head.named_parameters():
+        #     p.requires_grad = True
+
+        # model.head.bias.requires_grad = False
 
     model.to(device)
 
@@ -334,12 +352,12 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir:
+        if args.output_dir and epoch % 1 == 0:
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, calc_icc=False)
         print(f"Loss of the network on the {len(dataset_val)} test images: {test_stats['loss']:.1f}")
         min_loss = min(min_loss, test_stats["loss"])
         print(f'Min loss: {min_loss:.2f}%')

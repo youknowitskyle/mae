@@ -39,9 +39,11 @@ class DATA(Dataset):
         if self._train:
             # img
             train_image_list_path = os.path.join(root_path, 'train_img_path_fold' + str(fold) + '.txt')
+            # train_image_list_path = os.path.join(root_path, 'im.txt')
             train_image_list = open(train_image_list_path).readlines()
             # img labels
             train_label_list_path = os.path.join(root_path, 'train_label_fold' + str(fold) + '.txt')
+            # train_label_list_path = os.path.join(root_path, 'lab.txt')
             train_label_list = np.loadtxt(train_label_list_path).astype('float32')
             # only use unilateral labels for FEAFA
             if unilateral:
@@ -51,10 +53,12 @@ class DATA(Dataset):
         else:
             # img
             test_image_list_path = os.path.join(root_path, 'test_img_path_fold' + str(fold) + '.txt')
+            # test_image_list_path = os.path.join(root_path, 'im.txt')
             test_image_list = open(test_image_list_path).readlines()
 
             # img labels
             test_label_list_path = os.path.join(root_path, 'test_label_fold' + str(fold) + '.txt')
+            # test_label_list_path = os.path.join(root_path, 'lab.txt')
             test_label_list = np.loadtxt(test_label_list_path).astype('float32')
             # only use uilateral labels for FEAFA
             if unilateral:
@@ -101,7 +105,7 @@ class DISFA(Dataset):
 
             # img labels
             test_label_list_path = os.path.join(root_path, 'list', 'DISFA_test_label_fold' + str(fold) + '.txt')
-            test_label_list = np.loadtxt(test_label_list_path).astype('float32')
+            test_label_list = np.loadtxt(test_label_list_path).astype('float32') 
             self.data_list = make_dataset(test_image_list, test_label_list)
 
     def __getitem__(self, index):

@@ -46,12 +46,12 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
         if self.global_pool:
             s = x.shape
             x = x[:, 1:, :].mean(dim=1).reshape(s[0], -1, s[2])  # global pool without cls token
-            outcome = self.fc_norm(x)
-        else:
-            x = self.norm(x)
-            outcome = x[:, 0]
+            x = self.fc_norm(x)
+        # else:
+        #     x = self.norm(x)
+        #     x = x[:, 0]
 
-        return outcome
+        return x
 
 
 def vit_base_patch16(**kwargs):

@@ -19,6 +19,10 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from torch import inf
+from torchvision import transforms
+from PIL import Image
+import torch.nn as nn
+import numpy as np
 
 
 class SmoothedValue(object):
@@ -313,7 +317,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
 
 
 def load_model(args, model_without_ddp, optimizer, loss_scaler):
-    if args.resume:
+    if hasattr(args, 'resume') and args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
@@ -338,3 +342,10 @@ def all_reduce_mean(x):
         return x_reduce.item()
     else:
         return x
+    
+def get_sampler_weights(datalist):
+    weights = [0] * len(datalist)
+    for idx, (_, label) in enumerate(datalist):
+        weights[idx] = (label ** 1).sum()
+        # weights[idx] = label[0] * (1-label[0])
+    return weights

@@ -12,14 +12,12 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torchvision.transforms as T
+from torchvision.io import read_image
 from torch.utils.tensorboard import SummaryWriter
 
 import timm
 
 # assert timm.__version__ == "0.3.2" # version check
-from timm.models.layers import trunc_normal_
-from timm.data.mixup import Mixup
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
@@ -48,12 +46,6 @@ def get_args_parser():
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size')
 
-    parser.add_argument('--drop_path', type=float, default=0.1, metavar='PCT',
-                        help='Drop path rate (default: 0.1)')
-
-
-   
-
     # * Visualization params
     parser.add_argument('--checkpoint', required=True, default='',
                         help='finetune from checkpoint')
@@ -64,42 +56,12 @@ def get_args_parser():
     parser.add_argument('--num_vis', default=1, type=int, help='number of examples to visualize')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
-                        help='dataset path')
-    parser.add_argument('--dataset', default='DISFA', type=str,
-                        help='finetuning dataset')
+    parser.add_argument('--image_dir', default='test_imgs', type=str, help='path of directory with test images')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
-    parser.add_argument('--unilateral', default=0, type=int, help='only use unilateral AUs for FEAFA+')
-
-    parser.add_argument('--output_dir', default='./output_dir',
-                        help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_dir',
-                        help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', default='',
-                        help='resume from checkpoint')
-
-    parser.add_argument('--dist_eval', action='store_true', default=False,
-                        help='Enabling distributed evaluation (recommended during training for faster monitor')
-    parser.add_argument('--num_workers', default=10, type=int)
-    parser.add_argument('--pin_mem', action='store_true',
-                        help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
-    parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
-    parser.set_defaults(pin_mem=True)
-
-    parser.add_argument('-f', '--fold', default=1, type=int,
-                    metavar='N', help='the fold of three folds cross-validation ')
-
-    # distributed training parameters
-    parser.add_argument('--world_size', default=1, type=int,
-                        help='number of distributed processes')
-    parser.add_argument('--local_rank', default=-1, type=int)
-    parser.add_argument('--dist_on_itp', action='store_true')
-    parser.add_argument('--dist_url', default='env://',
-                        help='url used to set up distributed training')
 
     return parser
 
@@ -129,7 +91,6 @@ def my_forward_wrapper(attn_obj):
         attn = attn.softmax(dim=-1)
         attn = attn_obj.attn_drop(attn)
         attn_obj.attn_map = attn
-        print(attn.shape)
         attn_obj.cls_attn_map = attn[:, :, 0, 2:]
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -138,8 +99,22 @@ def my_forward_wrapper(attn_obj):
         return x
     return my_forward
 
+AU_names = ['Left Eye Close', 
+            'Right Eye Close', 
+            'Left Lid Raise', 
+            'Right Lid Raise', 
+            'Left Brow Lower', 
+            'Right Brow Lower', 
+            'Left Brow Raise', 
+            'Right Brow Raise', 
+            'Jaw Slide Left', 
+            'Jaw Slide Right', 
+            'Left Lip Corner Pull', 
+            'Right Lip Corner Pull', 
+            'Left Lip Corner Stretch', 
+            'Right Lip Corner Stretch']
+
 def main(args):
-    misc.init_distributed_mode(args)
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
@@ -153,25 +128,23 @@ def main(args):
 
     cudnn.benchmark = True
 
-    if args.dataset == 'DISFA':
-        dataset_val = DISFA(args.data_path, train=False, fold=args.fold, transform=build_transform(is_train=False, args=args))
-    else:
-        dataset_val = DATA(args.data_path, train=False, fold=args.fold, unilateral=args.unilateral, transform=build_transform(is_train=False, args=args))
+    files = Path(args.image_dir).glob("*")
+    img_list = []
+    for file in files:
+        # print(file)
+        # img_list.append(read_image(str(file)))
+        with open(str(file), 'rb') as f:
+            with Image.open(f) as img:
+                img_list.append(img.convert('RGB'))
 
-   
-    sampler_val = torch.utils.data.RandomSampler(dataset_val)
+    print(img_list)
 
-    data_loader_val = torch.utils.data.DataLoader(
-        dataset_val, sampler=sampler_val,
-        batch_size=1,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=False
+    transforms = T.Compose(
+        [T.ToTensor(), T.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)]
     )
     
     model = models_vit.__dict__[args.model](
         num_classes=args.nb_classes,
-        drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
     )
 
@@ -189,17 +162,7 @@ def main(args):
     interpolate_pos_embed(model, checkpoint_model)
 
     # load pre-trained model
-    msg = model.load_state_dict(checkpoint_model, strict=True)
-    print(msg)
-
-    # if args.global_pool:
-    #     print(msg.missing_keys)
-    #     assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
-    # else:
-    #     assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
-
-    # manually initialize fc layer
-    # trunc_normal_(model.head.weight, std=2e-5)
+    msg = model.load_state_dict(checkpoint_model, strict=False)
 
     model.to(device)
 
@@ -221,49 +184,35 @@ def main(args):
     optimizer = torch.optim.AdamW(param_groups, lr=0)
     loss_scaler = NativeScaler()
 
-
-
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    attention_layer = -2
+    attention_layer = -1
 
     model.blocks[attention_layer].attn.forward = my_forward_wrapper(model.blocks[attention_layer].attn)
     model.eval()
 
     print(model)
 
-    for name, param in model.head.named_parameters():
-        if param.requires_grad:
-            print(name, param.data)
+    for i, image in enumerate(img_list):
+        im = transforms(image)
+        y = model(im.unsqueeze(0).to(device)).detach().cpu().numpy()
+        print('-------------------------------------')
+        print(f'Inference results for image {i + 1}')
+        print('-------------------------------------')
+        for j in range(len(y[0])):
+            print(f'{AU_names[j]}: {y[0][j]}')
 
-    for i, batch in enumerate(data_loader_val):
-        if i >= args.num_vis:
-            break
-        
-        image = batch[0].squeeze(0)
-        show_img(image.permute(1,2,0))
-        target = batch[-1]
-
-        image = image.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
-
-
-        y = model(image.unsqueeze(0))
-        print(y)
-        print(target)
         attn_map = model.blocks[attention_layer].attn.attn_map.mean(dim=1).squeeze(0).detach()
         attn = model.blocks[attention_layer].attn.cls_attn_map.mean(dim=1).detach().cpu()
         pad = torch.zeros((1, 1), dtype=torch.float32).cpu()
         cls_weight = torch.cat((pad, attn), 1).view(14, 14)
         
-        img_resized = image.permute(1, 2, 0) * 0.5 + 0.5
+        img_resized = im.to(device).permute(1, 2, 0) * 0.5 + 0.5
         cls_resized = F.interpolate(cls_weight.view(1, 1, 14, 14), (224, 224), mode='bilinear').view(224, 224, 1)
-
         show_img2(img_resized.cpu(), cls_resized.cpu(), alpha=0.8)
 
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
     main(args)

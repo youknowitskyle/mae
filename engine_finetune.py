@@ -24,6 +24,14 @@ import util.lr_sched as lr_sched
 import pingouin as pg
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+
+def show_img(img):
+    img = np.asarray(img)
+    plt.figure(figsize=(10, 10))
+    plt.imshow(img)
+    plt.axis('off')
+    plt.show()
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -44,6 +52,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         print('log_dir: {}'.format(log_writer.log_dir))
 
     for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        # show_img(samples[0].permute(1,2,0))
 
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
@@ -100,7 +109,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
+def evaluate(data_loader, model, device, calc_icc=True):
     l2 = torch.nn.MSELoss()
     l1 = torch.nn.L1Loss()
 
@@ -111,6 +120,8 @@ def evaluate(data_loader, model, device):
     model.eval()
 
     for batch in metric_logger.log_every(data_loader, 10, header):
+        # show_img(batch[0][0].permute(1,2,0))
+
         images = batch[0]
         target = batch[-1]
         images = images.to(device, non_blocking=True)
@@ -124,15 +135,17 @@ def evaluate(data_loader, model, device):
         batch_size = target.shape[0]
         num_aus = target.shape[1]
 
+        if calc_icc:
+            indexes = [f'{i}_{j}' for i in range(batch_size) for j in range(num_aus)]
+            indexes += indexes
+            raters = ['t' for _ in range(batch_size * num_aus)] + ['o' for _ in range(batch_size * num_aus)]
+            values = np.concatenate((batch[-1].flatten(), output.cpu().flatten()))
 
-        indexes = [f'{i}_{j}' for i in range(batch_size) for j in range(num_aus)]
-        indexes += indexes
-        raters = ['t' for _ in range(batch_size * num_aus)] + ['o' for _ in range(batch_size * num_aus)]
-        values = np.concatenate((batch[-1].flatten(), output.cpu().flatten()))
-
-        df = pd.DataFrame({'index': indexes, 'rater': raters, 'value': values})
-        icc = pg.intraclass_corr(data=df, targets='index', raters='rater', ratings='value').round(3)
-        icc = icc.set_index("Type").loc[['ICC3']]['ICC'].values[0]
+            df = pd.DataFrame({'index': indexes, 'rater': raters, 'value': values})
+            icc = pg.intraclass_corr(data=df, targets='index', raters='rater', ratings='value').round(3)
+            icc = icc.set_index("Type").loc[['ICC3']]['ICC'].values[0]
+        else:
+            icc = -1
 
         # acc1, acc5 = accuracy(output, target, topk=(1, 5))
         mae = l1(output, target)

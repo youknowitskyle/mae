@@ -1,5 +1,10 @@
 /resume/
-/output_dir*/**/*.pth
+/output_*/**/*.pth
 /__pycache__/
 /output_dir_l2/
 **/events.out.tfevents*
+/**/*.pt
+/**/*.ptl
+/**/*.onnx
+/**/*.ort
+/**/model.quant*
