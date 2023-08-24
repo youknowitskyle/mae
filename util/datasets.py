@@ -34,12 +34,13 @@ def build_transform(is_train, args):
     # train transform
     if is_train:
         t = []
-        t.append(transforms.RandomRotation(30))
-        t.append(transforms.RandomResizedCrop(224, (0.7, 1)))
+        # t.append(transforms.RandomRotation(30))
+        t.append(transforms.RandomAffine(30, (0.2, 0.2), (0.5, 1.5)))
+        t.append(transforms.RandomResizedCrop(224, (0.5, 2.5)))
         t.append(transforms.RandomPerspective(0.4))
-        t.append(transforms.ElasticTransform(25.0))
+        # t.append(transforms.ElasticTransform(25.0))
         t.append(transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5))
-        # t.append(transforms.GaussianBlur(9, (0.1, 2.0)))
+        t.append(transforms.GaussianBlur(9, (0.1, 2.0)))
         t.append(transforms.RandomPosterize(6))
         t.append(transforms.RandomAdjustSharpness(1.25, 0.25))
         t.append(transforms.RandomAdjustSharpness(0.75, 0.25))
@@ -47,7 +48,8 @@ def build_transform(is_train, args):
         t.append(transforms.RandomInvert(0.1))
         t.append(transforms.RandomGrayscale(0.05))
         t.append(transforms.ToTensor())
-        # t.append(transforms.Normalize(mean, std))
+        t.append(transforms.Normalize(mean, std))
+
         return transforms.Compose(t)
         # this should always dispatch to transforms_imagenet_train
         transform = create_transform(
