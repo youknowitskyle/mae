@@ -29,7 +29,7 @@ This is an adapted PyTorch/GPU implementation of the following paper specificall
 
 To run the demo to see example output on custom images, please follow these steps:
 
-  1. Install dependencies.
+  1. Install dependencies. (Python 3.10)
       
       ```pip install -r requirements.txt```
 
