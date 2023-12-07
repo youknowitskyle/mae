@@ -1,3 +1,6 @@
+import torch
+import torch.nn as nn
+
 import argparse
 import datetime
 import json
@@ -6,15 +9,10 @@ import os
 import time
 import sys
 from pathlib import Path
-import faulthandler
 
 import torch
-import torch.nn as nn
 import torch.backends.cudnn as cudnn
-import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.mobile_optimizer import optimize_for_mobile
-import torch.utils.mobile_optimizer as mobile_optimizer
 
 import timm
 
@@ -34,27 +32,15 @@ import models_vit
 from engine_finetune import train_one_epoch, evaluate
 
 from dataset import *
-
-import matplotlib.pyplot as plt
-
-import coremltools
-
-import onnx
-from onnxruntime.quantization import quantize_dynamic, QuantType
-
-
-
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
-    parser.add_argument('--batch_size', default=32, type=int,
+    parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--accum_iter', default=1, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
     # Model parameters
-    parser.add_argument('--model', default='vit_large_patch16', type=str, metavar='MODEL',
-                        help='Name of model to train')
 
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size')
@@ -62,13 +48,33 @@ def get_args_parser():
     parser.add_argument('--drop_path', type=float, default=0.1, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
 
-    # * Finetuning params
-    parser.add_argument('--finetune', default='',
-                        help='finetune from checkpoint')
-    parser.add_argument('--global_pool', action='store_true')
-    parser.set_defaults(global_pool=True)
-    parser.add_argument('--cls_token', action='store_false', dest='global_pool',
-                        help='Use class token instead of global pool for classification')
+    # Optimizer parameters
+    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
+                        help='Clip gradient norm (default: None, no clipping)')
+    parser.add_argument('--weight_decay', type=float, default=0.05,
+                        help='weight decay (default: 0.05)')
+
+    parser.add_argument('--lr', type=float, default=None, metavar='LR',
+                        help='learning rate (absolute lr)')
+    parser.add_argument('--blr', type=float, default=1e-3, metavar='LR',
+                        help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
+    parser.add_argument('--layer_decay', type=float, default=0.75,
+                        help='layer-wise lr decay from ELECTRA/BEiT')
+
+    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
+                        help='lower lr bound for cyclic schedulers that hit 0')
+
+    parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
+                        help='epochs to warmup LR')
+
+    # Augmentation parameters
+    parser.add_argument('--color_jitter', type=float, default=None, metavar='PCT',
+                        help='Color jitter factor (enabled only when not using Auto/RandAug)')
+    parser.add_argument('--aa', type=str, default='rand-m1-mstd0.15-inc0', metavar='NAME',
+                        help='Use AutoAugment policy. "v0" or "original". " + "(default: rand-m9-mstd0.5-inc1)'),
+    parser.add_argument('--smoothing', type=float, default=0.1,
+                        help='Label smoothing (default: 0.1)')
+
 
     # Dataset parameters
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
@@ -114,42 +120,99 @@ def get_args_parser():
 
     return parser
 
+class depthwise_separable_conv(nn.Module):
+    def __init__(self, nin, nout):
+        super().__init__()
+        self.depthwise = nn.Conv2d(nin, nin, kernel_size=3, padding=1, groups=nin)
+        self.pointwise = nn.Conv2d(nin, nout, kernel_size=1)
 
-def print_size_of_model(model):
-    torch.save(model.state_dict(), "temp.p")
-    print('Size (MB):', os.path.getsize("temp.p")/1e6)
-    os.remove('temp.p')
+    def forward(self, x):
+        out = self.depthwise(x)
+        out = self.pointwise(out)
+        return out
+    
+class LW_FAU(nn.Module):
+    def __init__(self, img_size=224, in_chans=3, classes=1):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 3, 3)
+        self.bn = nn.BatchNorm2d(3)
+        self.relu = nn.ReLU()
+        self.pool = nn.MaxPool2d(2, 2, 1)      # 112 x 112 x 3
+        
+        self.branches = nn.ModuleList([nn.Sequential(
+            depthwise_separable_conv(3, 16),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),     # 56 x 56 x 16
 
-def load_model(args, model_without_ddp, optimizer, loss_scaler):
-    if args.resume:
-        if args.resume.startswith('https'):
-            checkpoint = torch.hub.load_state_dict_from_url(
-                args.resume, map_location='cpu', check_hash=True)
-        else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+            depthwise_separable_conv(16, 32),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),     # 28 x 28 x 32
+
+            depthwise_separable_conv(32, 32),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),     # 14 x 14 x 32
+
+            depthwise_separable_conv(32, 64),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),     # 7 x 7 x 64
+
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(64, 64, 1),
+            nn.Flatten(),
+            nn.Linear(64, 1)
+
+        ) for _ in range(classes)])    
+
+    def forward(self, x):
+        x = self.pool(self.relu(self.bn(self.conv(x))))
+
+        return torch.cat([branch(x) for branch in self.branches], dim=1)
+    
 
 def main(args):
-    misc.init_distributed_mode(args)
-
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
 
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
-    seed = args.seed + misc.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
 
     cudnn.benchmark = True
 
+    # dataset_train = build_dataset(is_train=True, args=args)
+    # dataset_val = build_dataset(is_train=False, args=args)
+
     if args.dataset == 'DISFA':
+        dataset_train = DISFA(args.data_path, train=True, fold=args.fold, transform=build_transform(is_train=True, args=args))
         dataset_val = DISFA(args.data_path, train=False, fold=args.fold, transform=build_transform(is_train=False, args=args))
     else:
+        dataset_train = DATA(args.data_path, train=True, fold=args.fold, unilateral=args.unilateral, transform=build_transform(is_train=True, args=args))
         dataset_val = DATA(args.data_path, train=False, fold=args.fold, unilateral=args.unilateral, transform=build_transform(is_train=False, args=args))
 
-    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    if False:  # args.distributed:
+        num_tasks = misc.get_world_size()
+        global_rank = misc.get_rank()
+        sampler_train = torch.utils.data.DistributedSampler(
+            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        )
+        print("Sampler_train = %s" % str(sampler_train))
+        if args.dist_eval:
+            if len(dataset_val) % num_tasks != 0:
+                print('Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
+                      'This will slightly alter validation results as extra duplicate entries are added to achieve '
+                      'equal num of samples per-process.')
+            sampler_val = torch.utils.data.DistributedSampler(
+                dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=True)  # shuffle=True to reduce monitor bias
+        else:
+            sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    else:
+        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        # sampler_train = torch.utils.data.WeightedRandomSampler(misc.get_sampler_weights(dataset_train.data_list), len(dataset_train))
+        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        # sampler_val = torch.utils.data.RandomSampler(dataset_val)
 
     if args.log_dir is not None and not args.eval:
         os.makedirs(args.log_dir, exist_ok=True)
@@ -157,6 +220,13 @@ def main(args):
     else:
         log_writer = None
 
+    data_loader_train = torch.utils.data.DataLoader(
+        dataset_train, sampler=sampler_train,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=True,
+    )
 
     data_loader_val = torch.utils.data.DataLoader(
         dataset_val, sampler=sampler_val,
@@ -165,12 +235,9 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=False
     )
+
     
-    model = models_vit.__dict__[args.model](
-        num_classes=args.nb_classes,
-        drop_path_rate=args.drop_path,
-        global_pool='true',
-    )
+    model = LW_FAU(classes=12)
 
     model.to(device)
 
@@ -182,84 +249,34 @@ def main(args):
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     
-    
+    if args.lr is None:  # only base_lr is specified
+        args.lr = args.blr * eff_batch_size / 256
+
+    print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
+    print("actual lr: %.2e" % args.lr)
+
+    print("accumulate grad iterations: %d" % args.accum_iter)
+    print("effective batch size: %d" % eff_batch_size)
+
     # if args.distributed:
     #     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     #     model_without_ddp = model.module
 
     # build optimizer with layer-wise lr decay (lrd)
-    param_groups = lrd.param_groups_lrd(model_without_ddp, 0,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=0
-    )
-    optimizer = torch.optim.AdamW(param_groups, lr=0)
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location='cpu')
+        model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     loss_scaler = NativeScaler()
 
+    
     criterion = torch.nn.MSELoss()
 
     print("criterion = %s" % str(criterion))
 
-    load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-
-    print_size_of_model(model)
-
-    model.to('cpu')
-
-    model.eval()
-
-    model.qconfig = torch.quantization.get_default_qconfig('fbgemm')
-    torch.backends.quantized.engine = 'fbgemm'
-
-    quantized_model = torch.quantization.quantize_dynamic(model, qconfig_spec={torch.nn.Linear}, dtype=torch.qint8)
-
-    # print_size_of_model(quantized_model)
-
-    print(quantized_model)
-
-    quantized_model.eval()
-
-    ts_model = torch.jit.script(quantized_model)
-
-    example_forward_input = torch.rand(1, 3, 224, 224)
-    # ts_model = torch.jit.trace(quantized_model, example_forward_input)
-    print(model(example_forward_input))
-    
-    # torch.onnx.export(model, example_forward_input,'./output_dir/model.onnx', opset_version=9, input_names=['input'], output_names=['output'])
-
-    ts_model.save('./output_dir/final.pt')
-
-    st = time.time()
-    x = model(example_forward_input)
-    print(f'original inference time: {time.time() - st}')
-
-    st = time.time()
-    x = quantized_model(example_forward_input)
-    print(f'quantized inference time: {time.time() - st}')
-
-    # print('slan')
-    # mobile_model = optimize_for_mobile(ts_model)
-    # print('jee')
-    # print(torch.jit.export_opnames(mobile_model))
-    # mobile_model.save("./output_dir/final_optimized.pt")
-    # mobile_model._save_for_lite_interpreter('./output_dir/final_lite.ptl')
-    # print('done')
-
-    # mlmodel = coremltools.convert(
-    #     ts_model,
-    #     inputs=[coremltools.ImageType(shape=(1, 3, 224, 224))],
-
-    # )
-
-    # mlmodel.save("./output_dir/newmodel.mlmodel")
-
-    # test_stats = evaluate(data_loader_val, quantized_model, 'cpu')
-    # print(f"Loss of the network on the {len(dataset_val)} test images: {test_stats['loss']:.1f}%")
-    # exit(0)
-
-    exit(0)
-
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, calc_icc=True)
         print(f"Loss of the network on the {len(dataset_val)} test images: {test_stats['loss']:.1f}%")
         exit(0)
 
@@ -273,16 +290,16 @@ def main(args):
         train_stats = train_one_epoch(
             model, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
-            args.clip_grad, mixup_fn,
+            args.clip_grad,
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir:
+        if args.output_dir and epoch % 1 == 0:
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, calc_icc=False)
         print(f"Loss of the network on the {len(dataset_val)} test images: {test_stats['loss']:.1f}")
         min_loss = min(min_loss, test_stats["loss"])
         print(f'Min loss: {min_loss:.2f}%')
@@ -309,9 +326,9 @@ def main(args):
 
 
 if __name__ == '__main__':
-    faulthandler.enable()
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
+

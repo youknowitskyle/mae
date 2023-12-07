@@ -206,8 +206,8 @@ def main(args):
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     else:
-        # sampler_train = torch.utils.data.RandomSampler(dataset_train)
-        sampler_train = torch.utils.data.WeightedRandomSampler(misc.get_sampler_weights(dataset_train.data_list), len(dataset_train))
+        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        # sampler_train = torch.utils.data.WeightedRandomSampler(misc.get_sampler_weights(dataset_train.data_list), len(dataset_train))
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
         # sampler_val = torch.utils.data.RandomSampler(dataset_val)
 
@@ -334,7 +334,7 @@ def main(args):
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, calc_icc=True)
         print(f"Loss of the network on the {len(dataset_val)} test images: {test_stats['loss']:.1f}%")
         exit(0)
 

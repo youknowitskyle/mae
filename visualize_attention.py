@@ -175,6 +175,12 @@ def main(args):
         global_pool=args.global_pool,
     )
 
+    modelp = models_vit.__dict__[args.model](
+        num_classes=args.nb_classes,
+        drop_path_rate=args.drop_path,
+        global_pool=args.global_pool,
+    )
+
     checkpoint = torch.load(args.checkpoint, map_location='cpu')
 
     print("Load pre-trained checkpoint from: %s" % args.checkpoint)
@@ -189,9 +195,23 @@ def main(args):
     interpolate_pos_embed(model, checkpoint_model)
 
     # load pre-trained model
-    msg = model.load_state_dict(checkpoint_model, strict=True)
+    msg = model.load_state_dict(checkpoint_model, strict=False)
     print(msg)
 
+    checkpoint = torch.load('/home/kyle/school/farapy/mae/output_dir_pretrain/checkpoint-799.pth', map_location='cpu')
+    
+    checkpoint_model = checkpoint['model']
+    state_dict = model.state_dict()
+    for k in ['head.weight', 'head.bias']:
+        if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+            print(f"Removing key {k} from pretrained checkpoint")
+            del checkpoint_model[k]
+
+    interpolate_pos_embed(modelp, checkpoint_model)
+
+    # load pre-trained model
+    msg = modelp.load_state_dict(checkpoint_model, strict=False)
+    
     # if args.global_pool:
     #     print(msg.missing_keys)
     #     assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
@@ -202,8 +222,9 @@ def main(args):
     # trunc_normal_(model.head.weight, std=2e-5)
 
     model.to(device)
+    modelp.to(device)
 
-    model_without_ddp = model
+    # model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     print('number of params (M): %.2f' % (n_parameters / 1.e6))
@@ -214,21 +235,24 @@ def main(args):
     #     model_without_ddp = model.module
 
     # build optimizer with layer-wise lr decay (lrd)
-    param_groups = lrd.param_groups_lrd(model_without_ddp, 0,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=0
-    )
-    optimizer = torch.optim.AdamW(param_groups, lr=0)
-    loss_scaler = NativeScaler()
+    # param_groups = lrd.param_groups_lrd(model_without_ddp, 0,
+    #     no_weight_decay_list=model_without_ddp.no_weight_decay(),
+    #     layer_decay=0
+    # )
+    # optimizer = torch.optim.AdamW(param_groups, lr=0)
+    # loss_scaler = NativeScaler()
 
 
 
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+    # misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
-    attention_layer = -2
+    attention_layer = -3
 
     model.blocks[attention_layer].attn.forward = my_forward_wrapper(model.blocks[attention_layer].attn)
     model.eval()
+
+    modelp.blocks[attention_layer].attn.forward = my_forward_wrapper(modelp.blocks[attention_layer].attn)
+    modelp.eval()
 
     print(model)
 
@@ -241,7 +265,7 @@ def main(args):
             break
         
         image = batch[0].squeeze(0)
-        show_img(image.permute(1,2,0))
+        # show_img(image.permute(1,2,0))
         target = batch[-1]
 
         image = image.to(device, non_blocking=True)
@@ -253,6 +277,19 @@ def main(args):
         print(target)
         attn_map = model.blocks[attention_layer].attn.attn_map.mean(dim=1).squeeze(0).detach()
         attn = model.blocks[attention_layer].attn.cls_attn_map.mean(dim=1).detach().cpu()
+        pad = torch.zeros((1, 1), dtype=torch.float32).cpu()
+        cls_weight = torch.cat((pad, attn), 1).view(14, 14)
+        
+        img_resized = image.permute(1, 2, 0) * 0.5 + 0.5
+        cls_resized = F.interpolate(cls_weight.view(1, 1, 14, 14), (224, 224), mode='bilinear').view(224, 224, 1)
+
+        show_img2(img_resized.cpu(), cls_resized.cpu(), alpha=0.8)
+
+        y = modelp(image.unsqueeze(0))
+        print(y)
+        print(target)
+        attn_map = modelp.blocks[attention_layer].attn.attn_map.mean(dim=1).squeeze(0).detach()
+        attn = modelp.blocks[attention_layer].attn.cls_attn_map.mean(dim=1).detach().cpu()
         pad = torch.zeros((1, 1), dtype=torch.float32).cpu()
         cls_weight = torch.cat((pad, attn), 1).view(14, 14)
         

@@ -4,7 +4,7 @@ python main_finetune.py --finetune /home/kyle/school/farapy/mae/output_dir_pretr
 
 python main_finetune.py --finetune /home/kyle/school/farapy/mae/output_dir_pretrain/checkpoint-799.pth --model vit_base_patch16 --data_path /home/kyle/school/farapy/ME-GraphAU-unilateral/data/DISFA --batch_size 32 --accum_iter 8 --epochs 20 --warmup_epochs 10 --blr 1.5e-4 --drop_path 0.1 --weight_decay 0.05 --nb_classes 12 --smoothing 0 --reprob 0.1 --layer_decay 0.75 --fold 3
 
-python visualize_attention.py --checkpoint /home/kyle/school/farapy/mae/output_final1/checkpoint-18.pth --fold 3 --model vit_base_patch16 --dataset FEAFA --data_path /home/kyle/school/farapy/FEAFA+/list/ --nb_classes 14 --unilateral 1 --num_vis 10
+python visualize_attention.py --checkpoint /home/kyle/school/farapy/mae/output_final4/checkpoint-18.pth --fold 3 --model vit_base_patch16 --dataset FEAFA --data_path /home/kyle/school/farapy/FEAFA+/list/ --nb_classes 14 --unilateral 1 --num_vis 10
 
 python quantize.py --resume /home/kyle/school/farapy/mae/output_final1/checkpoint-18.pth --fold 3 --model vit_base_patch16 --dataset FEAFA --data_path /home/kyle/school/farapy/FEAFA+/list/ --nb_classes 14 --unilateral 1
 
@@ -16,6 +16,17 @@ python main_finetune.py --finetune /home/kyle/school/farapy/mae/output_dir_pretr
 
 
 
-python test.py --checkpoint /home/kyle/school/farapy/mae/output_final1/checkpoint-19.pth --model vit_base_patch16 --nb_classes 14 --num_vis 10 --image_dir ./test_imgs
+python test.py --checkpoint /home/kyle/school/farapy/mae/output_final6/checkpoint-10.pth --model vit_base_patch16 --nb_classes 14 --num_vis 10 --image_dir ./test_imgs
 
 python main_finetune.py --finetune /home/kyle/school/farapy/mae/output_dir_pretrain/checkpoint-799.pth --model vit_base_patch16 --dataset FEAFA --data_path /home/kyle/school/farapy/FEAFA+/list/ --batch_size 48 --accum_iter 4 --epochs 20 --warmup_epochs 5 --blr 1.5e-4 --drop_path 0.1 --weight_decay 0.05 --nb_classes 14 --smoothing 0 --reprob 0.0 --unilateral 1 --output_dir ./output_final2 --log_dir ./output_final2 --fold 2
+
+python main_finetune.py --finetune /home/kyle/school/farapy/mae/output_dir_pretrain/checkpoint-799.pth --model vit_base_patch16 --data_path /home/kyle/school/farapy/ME-GraphAU-unilateral/data/DISFA --batch_size 48 --accum_iter 4 --epochs 20 --warmup_epochs 5 --blr 1.5e-4 --drop_path 0.1 --weight_decay 0.05 --nb_classes 12 --smoothing 0 --reprob 0.0 --fold 1 --output_dir ./output_disfa1 --log_dir ./output_disfa1
+
+python main_finetune.py --finetune /home/kyle/school/farapy/mae/output_dir_pretrain/checkpoint-799.pth --model vit_base_patch16 --dataset FEAFA --data_path /home/kyle/school/farapy/FEAFA+/list/ --batch_size 48 --accum_iter 4 --epochs 20 --warmup_epochs 5 --blr 1.5e-4 --drop_path 0.1 --weight_decay 0.05 --nb_classes 14 --smoothing 0 --reprob 0.0 --unilateral 1 --output_dir ./output_final6 --log_dir ./output_final6 --fold 1
+
+
+
+
+python main_finetune.py --finetune /home/kyle/school/farapy/mae/output_dir_pretrain/checkpoint-799.pth --model vit_base_patch16 --dataset FEAFA --data_path /home/kyle/school/farapy/FEAFA+/list/ --resume /home/kyle/school/farapy/mae/output_feafa3/checkpoint-7.pth --batch_size 16 --accum_iter 4 --epochs 20 --warmup_epochs 5 --blr 1.5e-4 --drop_path 0.1 --weight_decay 0.05 --nb_classes 24 --smoothing 0 --reprob 0.0 --unilateral 0 --output_dir ./output_final2 --log_dir ./output_final2 --fold 1 --eval
+
+python test_farapy_v2.py --data_path /home/kyle/school/farapy/ME-GraphAU-unilateral/data/DISFA --batch_size 48 --accum_iter 4 --epochs 20 --warmup_epochs 5 --blr 1.5e-4 --weight_decay 0.05 --nb_classes 12 --fold 1 --output_dir ./output_farapy1 --log_dir ./output_farapy1
